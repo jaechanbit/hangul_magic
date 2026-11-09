@@ -611,6 +611,55 @@ pre.send {
 }
 .howto-dlg video { display: block; width: 100%; height: auto; max-height: 78vh; background: #000; }
 
+/* 임시저장 복구 배너, 내 부서 프로필, 셀 넘침 경고, 전체 칸 편집 토글 */
+.draft-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 12px 16px;
+  background: var(--navy-soft);
+  border: 1.5px solid var(--navy);
+  border-radius: 6px;
+  font-size: 15px;
+}
+.draft-bar b { color: var(--navy); }
+.pf-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+}
+.pf-field { display: grid; gap: 4px; }
+.pf-field label { font-size: 14px; font-weight: 700; color: var(--navy); }
+.over-warn {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 6px;
+  border: 1.5px solid var(--warn);
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 14.5px;
+}
+.over-warn b { color: var(--bad); }
+.holes-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--navy);
+  cursor: pointer;
+}
+.holes-toggle input { width: 17px; height: 17px; accent-color: var(--accent); margin: 0; }
+.tool-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 @media (max-width: 960px) {
   .s1-grid, .s4-grid { grid-template-columns: minmax(0, 1fr); }
   .panel { position: static; }
@@ -621,6 +670,7 @@ pre.send {
   .steps { grid-template-columns: repeat(2, 1fr); }
   .tbl { grid-template-columns: 1fr; }
   .tbl .th { border-right: 0; justify-items: start; }
+  .pf-grid { grid-template-columns: 1fr; }
 }
 </style>
 </head>
@@ -672,6 +722,14 @@ pre.send {
     </ol>
   </header>
 
+  <div class="draft-bar" id="draft-banner" hidden>
+    <span>💾 <b>이전 작업 자동 복구:</b> 직전에 작성 중이던 기획·보고서 입력 내용과 초안이 브라우저에 임시 저장되어 있습니다.</span>
+    <div class="actions">
+      <button type="button" class="btn sm" id="draft-restore">이어서 작업 복구하기</button>
+      <button type="button" class="btn quiet sm" id="draft-clear">임시저장 지우기</button>
+    </div>
+  </div>
+
   <!-- ==================== Ⅰ단계: 양식 선택 ==================== -->
   <section data-step="1" id="s1">
     <h2>한글 양식 올리기 또는 공공기관 표준 틀 선택</h2>
@@ -689,13 +747,16 @@ pre.send {
             </label>
             <input id="f-input" type="file" accept=".hwpx,.hwp" hidden>
           </div>
-          <div class="th">표준 기본 양식<br><span class="opt">(양식 없을 때)</span></div>
+          <div class="th">표준 기본 양식<br><span class="opt">(5대 행정 서식)</span></div>
           <div class="td">
             <div class="preset-grid">
-              <button type="button" class="btn quiet sm" id="f-preset-plan">📋 사업 기획서·추진계획(안) 표준 틀</button>
-              <button type="button" class="btn quiet sm" id="f-preset-report">📊 추진실적·결과보고서 표준 틀</button>
+              <button type="button" class="btn quiet sm" id="f-preset-plan" data-preset="plan">📋 사업추진계획(안) 표준 틀</button>
+              <button type="button" class="btn quiet sm" id="f-preset-report" data-preset="report">📊 추진실적·결과보고서 표준 틀</button>
+              <button type="button" class="btn quiet sm" id="f-preset-review" data-preset="review">🔍 현안검토·대책보고서 표준 틀</button>
+              <button type="button" class="btn quiet sm" id="f-preset-budget" data-preset="budget">💰 예산요구·산출내역서 표준 틀</button>
+              <button type="button" class="btn quiet sm" id="f-preset-minutes" data-preset="minutes">📝 회의록·간담회보고 표준 틀</button>
             </div>
-            <span class="hint">양식 파일이 없어도 공공기관 표준 보고서·계획서 레이아웃으로 바로 시작할 수 있습니다.</span>
+            <span class="hint">별도 양식 파일이 없어도 공공기관 5대 표준 보고서·계획서(.hwpx) 레이아웃으로 즉시 시작할 수 있습니다.</span>
           </div>
         </div>
 
@@ -767,12 +828,12 @@ pre.send {
     </div>
 
     <div class="block">
-      <h3>참고·근거 자료 첨부 <span class="opt">(선택 · 기존 보고서, 법령·지침 발췌, 통계·설문 CSV 등)</span></h3>
-      <p class="hint">올린 파일(.hwpx, .hwp, .txt, .md, .csv)에서 텍스트와 수치만 추출해 프롬프트 근거로 활용합니다.</p>
+      <h3>참고·근거 자료 첨부 <span class="opt">(선택 · 한글, 엑셀 예산표, 워드, PDF 지침·법령, CSV·TXT)</span></h3>
+      <p class="hint">올린 파일(<b>.hwpx, .hwp, .xlsx, .docx, .pdf, .txt, .md, .csv</b>)에서 텍스트와 표 수치를 브라우저 내부에서 추출하고 개인정보를 자동 마스킹해 근거로 활용합니다.</p>
       <ul id="m-list" class="files"></ul>
       <div>
-        <label class="btn quiet sm" for="m-input" tabindex="0" role="button">+ 참고 자료 파일 추가</label>
-        <input id="m-input" type="file" multiple accept=".hwpx,.hwp,.txt,.md,.csv" hidden>
+        <label class="btn quiet sm" for="m-input" tabindex="0" role="button">+ 참고 자료 파일 추가 (.hwpx/.hwp/.xlsx/.docx/.pdf/.csv)</label>
+        <input id="m-input" type="file" multiple accept=".hwpx,.hwp,.xlsx,.docx,.pdf,.txt,.md,.csv" hidden>
       </div>
       <div id="m-msg" class="msg" role="alert"></div>
     </div>
@@ -787,6 +848,33 @@ pre.send {
       <input id="p-input" type="file" multiple accept="image/*" hidden>
       <div id="p-msg" class="msg" role="alert"></div>
     </div>
+
+    <details id="profile-box" class="block">
+      <summary>내 기관·부서·기안자 기본 정보 고정 <b id="pf-badge">미설정</b></summary>
+      <p class="hint">한 번 입력해 두면 이 브라우저에 저장되어, 매번 적지 않아도 표지·머리글(<code>@바꾸기</code>)과 담당부서·연락처 칸에 자동 반영됩니다. (성명·연락처 역시 AI 프롬프트에서는 자동 마스킹됩니다)</p>
+      <div class="pf-grid">
+        <div class="pf-field">
+          <label for="pf-org">기관명</label>
+          <input id="pf-org" type="text" placeholder="예: 행정안전부 / ○○시청">
+        </div>
+        <div class="pf-field">
+          <label for="pf-dept">부서·팀명</label>
+          <input id="pf-dept" type="text" placeholder="예: 디지털정부기획과 (스마트행정팀)">
+        </div>
+        <div class="pf-field">
+          <label for="pf-author">담당자(직급·성명)</label>
+          <input id="pf-author" type="text" placeholder="예: 행정주사 홍길동">
+        </div>
+        <div class="pf-field">
+          <label for="pf-tel">연락처(내선번호)</label>
+          <input id="pf-tel" type="text" placeholder="예: 044-205-0000">
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn quiet sm" id="pf-clear">기본 정보 비우기</button>
+        <span class="opt" id="pf-msg">입력 즉시 자동 저장됩니다.</span>
+      </div>
+    </details>
 
     <details id="pi" class="block">
       <summary>개인정보 자동 가리기(마스킹) 설정 <b id="pi-n">없음</b></summary>
@@ -820,10 +908,11 @@ pre.send {
         <li class="now" id="ps-1">
           <div class="actions">
             <button type="button" class="btn" id="paste-copy">📋 1단계: AI에게 보낼 프롬프트 복사하기</button>
+            <button type="button" class="btn quiet sm" id="paste-dl" title="망분리(업무망↔인터넷망) 환경에서 텍스트 파일로 반출할 때 사용하세요">💾 망분리 반출용 프롬프트(.txt) 저장</button>
             <span class="opt" id="paste-count"></span>
           </div>
           <details id="paste-show">
-            <summary style="font-size:15px;">복사할 프롬프트 원문 펼쳐보기</summary>
+            <summary style="font-size:15px;">복사할 프롬프트 원문 펼쳐보기 (개인정보 마스킹 완료본)</summary>
             <pre id="paste-pre" class="send"></pre>
           </details>
         </li>
@@ -837,8 +926,12 @@ pre.send {
           </div>
         </li>
         <li id="ps-3">
-          <label for="paste-in"><b>3단계: AI가 출력한 코드 상자 우측 상단의 [복사] 버튼을 누른 뒤 아래 칸에 붙여넣으세요.</b></label>
-          <textarea id="paste-in" rows="6" placeholder="여기에 AI 답변 전체를 붙여넣으세요 (Ctrl+V)"></textarea>
+          <div class="tool-row" style="justify-content: space-between;">
+            <label for="paste-in"><b>3단계: AI가 출력한 코드 상자 우측 상단의 [복사] 버튼을 누른 뒤 아래 칸에 붙여넣으세요.</b></label>
+            <label class="btn quiet sm" for="paste-file" tabindex="0" role="button">📂 AI 답변 파일(.txt) 불러오기</label>
+            <input id="paste-file" type="file" accept=".txt,.md,.json" hidden>
+          </div>
+          <textarea id="paste-in" rows="6" placeholder="여기에 AI 답변 전체를 붙여넣으세요 (Ctrl+V) — 망분리 환경에서는 우측 [AI 답변 파일 불러오기]를 이용하실 수 있습니다."></textarea>
         </li>
       </ol>
       <div id="paste-msg" class="msg" role="alert"></div>
@@ -876,21 +969,32 @@ pre.send {
         <div class="actions col">
           <button type="button" class="btn" id="get-hwpx">📥 한글 파일 다운로드 (.hwpx)</button>
           <button type="button" class="btn quiet sm" id="get-hwp">구형 한글 형식(.hwp)으로 변환 다운로드</button>
+          <button type="button" class="btn quiet sm" id="norm-btn" title="날짜(2026. 11. 9.(월)), 시각(14:00), 금액 쉼표(1,000,000원) 등 행정업무 운영 규정 표기법을 AI 없이 즉시 교정합니다">📏 공문서 표기법(날짜·시각·금액) 원클릭 자동 교정</button>
         </div>
         <div id="get-msg" class="msg" role="status"></div>
+        <div id="over-box" class="over-warn" hidden>
+          <span id="over-text"></span>
+          <div>
+            <button type="button" class="btn sm" id="over-fix">✂️ 넘친 칸 분량 자동 줄이기 (AI 수정 요청)</button>
+          </div>
+        </div>
         <p id="undo-row" hidden><button type="button" class="link" id="undo">↩ 직전 문서 상태로 되돌리기</button></p>
 
         <!-- 3종 편집 탭: ① 빈칸(○○) 채우기 / ② 개요·칸 원문 직접 편집 / ③ AI 재수정 요청 -->
         <div class="edit-tabs" role="tablist">
-          <button type="button" class="active" data-tab="holes">① 빈칸(○○) 채우기</button>
+          <button type="button" class="active" data-tab="holes">① 빈칸(○○)·항목 채우기</button>
           <button type="button" data-tab="raw">② 원문 직접 편집</button>
           <button type="button" data-tab="ai">③ AI 추가 수정</button>
         </div>
 
         <!-- 탭 1: 빈칸 채우기 -->
         <div class="tab-pane" id="pane-holes">
-          <h3>미정 빈칸(○○) 빠른 입력 <span class="opt" id="fill-n"></span></h3>
+          <h3>미정 빈칸(○○) 및 서식 항목 빠른 입력 <span class="opt" id="fill-n"></span></h3>
           <p class="hint" id="holes-hint">AI가 임의로 지어내지 않고 ○○로 비워 둔 곳입니다. 값을 적고 버튼을 누르면 AI 없이 1초 만에 반영됩니다.</p>
+          <label class="holes-toggle" id="holes-mode-wrap" hidden>
+            <input type="checkbox" id="holes-all">
+            <span>○○ 빈칸뿐 아니라 이 서식의 모든 입력 칸 함께 펼쳐서 편집하기</span>
+          </label>
           <div id="fill-list" class="col"></div>
           <button type="button" class="btn quiet sm" id="refill">입력한 값으로 즉시 다시 만들기</button>
         </div>
@@ -898,7 +1002,7 @@ pre.send {
         <!-- 탭 2: 개요/JSON 원문 직접 편집기 -->
         <div class="tab-pane" id="pane-raw" hidden>
           <h3>개요 / 칸 값 원문 직접 편집</h3>
-          <p class="hint">문구, 수치, 표 행(`|`), 소제목을 직접 고친 뒤 아래 버튼을 누르면 AI 없이 즉시 한글 파일과 미리보기가 갱신됩니다.</p>
+          <p class="hint" id="raw-hint">문구, 수치, 표 행(`|`), 소제목을 직접 고친 뒤 아래 버튼을 누르면 AI 없이 즉시 한글 파일과 미리보기가 갱신됩니다.</p>
           <textarea id="raw-editor" rows="12" spellcheck="false"></textarea>
           <button type="button" class="btn quiet sm" id="raw-apply">원문 수정사항 즉시 반영하기</button>
         </div>
@@ -932,7 +1036,7 @@ pre.send {
       <span id="eng-status">⚙️ 한글 조립 엔진(Pyodide+lxml) 준비 중...</span>
       <span id="rhwp-status">👁️ 미리보기·변환 엔진(rhwp WASM) 준비 중...</span>
     </div>
-    <p>모든 한글 파일(.hwpx/.hwp) 분석·조립·사진 삽입·미리보기 렌더링은 사용자 PC 브라우저 내부(WebAssembly)에서 실행되며 외부로 전송되지 않습니다.</p>
+    <p>모든 한글 파일(.hwpx/.hwp) 및 참고자료(.xlsx/.docx/.pdf) 분석·조립·사진 삽입·미리보기 렌더링은 사용자 PC 브라우저 내부(WebAssembly)에서 실행되며 외부로 전송되지 않습니다. · <a href="licenses.html" target="_blank" rel="noopener" class="link">오픈소스 라이선스 고지</a></p>
   </footer>
 </div>
 

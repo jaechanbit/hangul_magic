@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>오픈소스 라이선스 고지 — 공공 한글 기획·보고서 AI 메이커</title>
+<style>
+body {
+  font-family: "Pretendard", "Malgun Gothic", "Noto Sans KR", sans-serif;
+  max-width: 840px;
+  margin: 40px auto;
+  padding: 0 20px;
+  line-height: 1.65;
+  color: #0f172a;
+  background: #f8fafc;
+}
+main {
+  background: #fff;
+  padding: 36px 40px;
+  border-top: 4px solid #1b365d;
+  box-shadow: 0 2px 12px rgba(15, 23, 42, .08);
+}
+h1 { font-size: 24px; color: #1b365d; margin-top: 0; }
+h2 { font-size: 18px; color: #1b365d; margin-top: 28px; border-bottom: 1px solid #cbd5e1; padding-bottom: 6px; }
+ul { padding-left: 20px; }
+code, pre { background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+pre { padding: 12px; overflow-x: auto; }
+a { color: #1d4ed8; }
+</style>
+</head>
+<body>
+<main>
+  <h1>오픈소스 소프트웨어 라이선스 고지</h1>
+  <p><strong>공공 한글 기획·보고서 AI 메이커 (<code>hangul_magic</code>)</strong>는 모든 문서 분석·조립·변환·미리보기 처리를 사용자 브라우저 내부(WebAssembly)에서 안전하게 수행하기 위해 아래의 오픈소스 라이브러리를 사용합니다.</p>
+
+  <h2>1. Pyodide (MPL-2.0)</h2>
+  <ul>
+    <li><strong>용도</strong>: 브라우저 내 Python 3 WebAssembly 런타임 구동 (<code>engine/hwpdoc.py</code>, <code>engine/extra.py</code> 실행)</li>
+    <li><strong>라이선스</strong>: Mozilla Public License 2.0 (MPL-2.0)</li>
+    <li><strong>출처</strong>: <a href="https://github.com/pyodide/pyodide" target="_blank" rel="noopener">https://github.com/pyodide/pyodide</a></li>
+  </ul>
+
+  <h2>2. lxml / libxml2 / libxslt (BSD-3-Clause / MIT)</h2>
+  <ul>
+    <li><strong>용도</strong>: HWPX(OWPML) XML 및 XLSX·DOCX 문서 고속 파싱·조립</li>
+    <li><strong>라이선스</strong>: BSD 3-Clause License (lxml), MIT License (libxml2, libxslt)</li>
+    <li><strong>출처</strong>: <a href="https://lxml.de/" target="_blank" rel="noopener">https://lxml.de/</a></li>
+  </ul>
+
+  <h2>3. @rhwp/core (MIT / Apache-2.0)</h2>
+  <ul>
+    <li><strong>용도</strong>: 구형 한글(<code>.hwp</code>) ↔ 개방형 한글(<code>.hwpx</code>) 양방향 변환 및 SVG 페이지 미리보기 렌더링 (<code>lib/rhwp/</code>)</li>
+    <li><strong>라이선스</strong>: MIT / Apache-2.0</li>
+  </ul>
+
+  <h2>4. 한글 척척 (hangul-chukchuk) 기반 엔진 참고</h2>
+  <ul>
+    <li><strong>설명</strong>: 본 프로젝트의 HWPX 분석·조립 엔진(<code>hwpdoc.py</code>) 및 개인정보 마스커(<code>lib/masker/core.js</code>) 구조는 오픈소스 프로젝트 <code>hangul-chukchuk</code>의 클라이언트 로컬 처리 아키텍처를 기반으로 공공기관 기획·보고서 행정 실무에 맞게 확장·보강되었습니다.</li>
+  </ul>
+
+  <p style="margin-top:32px;"><a href="index.html">← 공공 한글 기획·보고서 AI 메이커로 돌아가기</a></p>
+</main>
+</body>
+</html>

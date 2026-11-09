@@ -19,7 +19,10 @@ import argparse
 import copy
 import json
 import math
+import os
 import re
+import zipfile
+import zlib
 
 from lxml import etree
 
@@ -509,6 +512,283 @@ def fit(path, keys, out_path):
         print(x)
 
 
+# ---------------------------------------------------------------- 참고·근거 자료(.xlsx / .docx / .pdf) 로컬 텍스트·표 추출
+
+def _col_idx(ref):
+    m = re.match(r'^([A-Z]+)', ref or '')
+    if not m:
+        return 0
+    idx = 0
+    for ch in m.group(1):
+        idx = idx * 26 + (ord(ch) - 64)
+    return max(0, idx - 1)
+
+
+def extract_xlsx(path):
+    """엑셀(.xlsx) 통합문서에서 시트별 표 데이터를 파이프(|) 구분 텍스트로 추출."""
+    try:
+        zf = zipfile.ZipFile(path, 'r')
+    except Exception:
+        raise H.HwpError('엑셀(.xlsx) 파일을 열 수 없습니다. 암호가 걸려 있거나 손상된 파일인지 확인해 주세요.')
+    with zf:
+        names = set(zf.namelist())
+        shared = []
+        if 'xl/sharedStrings.xml' in names:
+            root = etree.fromstring(zf.read('xl/sharedStrings.xml'))
+            for si in root.findall('.//{*}si'):
+                shared.append(''.join(t.text or '' for t in si.findall('.//{*}t')).strip())
+
+        sheets = []
+        if 'xl/workbook.xml' in names:
+            wb = etree.fromstring(zf.read('xl/workbook.xml'))
+            rels = {}
+            if 'xl/_rels/workbook.xml.rels' in names:
+                rel_root = etree.fromstring(zf.read('xl/_rels/workbook.xml.rels'))
+                for r in rel_root.findall('.//{*}Relationship'):
+                    rid = r.get('Id')
+                    tgt = (r.get('Target') or '').lstrip('/')
+                    if not tgt.startswith('xl/'):
+                        tgt = 'xl/' + tgt
+                    rels[rid] = tgt
+            for sh in wb.findall('.//{*}sheet'):
+                sname = sh.get('name') or '시트'
+                rid = None
+                for k, v in sh.attrib.items():
+                    if k.endswith('}id') or k == 'r:id':
+                        rid = v
+                        break
+                tgt = rels.get(rid, '')
+                if tgt in names:
+                    sheets.append((sname, tgt))
+        if not sheets:
+            for n in sorted(names):
+                if re.match(r'^xl/worksheets/sheet\d+\.xml$', n):
+                    sheets.append((os.path.basename(n), n))
+
+        out_blocks = []
+        for sname, spath in sheets:
+            sroot = etree.fromstring(zf.read(spath))
+            rows_out = []
+            for row in sroot.findall('.//{*}sheetData/{*}row'):
+                cells = {}
+                max_c = -1
+                for idx, c in enumerate(row.findall('{*}c')):
+                    ref = c.get('r') or ''
+                    ci = _col_idx(ref) if ref else idx
+                    ctype = c.get('t') or ''
+                    val = ''
+                    if ctype == 'inlineStr':
+                        val = ''.join(t.text or '' for t in c.findall('.//{*}t'))
+                    else:
+                        v_el = c.find('{*}v')
+                        raw = (v_el.text or '').strip() if v_el is not None else ''
+                        if ctype == 's' and raw.isdigit() and int(raw) < len(shared):
+                            val = shared[int(raw)]
+                        else:
+                            val = raw
+                    val = ' '.join(val.replace('\r', ' ').replace('\n', ' ').split())
+                    if val:
+                        cells[ci] = val
+                        if ci > max_c:
+                            max_c = ci
+                if max_c >= 0:
+                    line_cells = [cells.get(i, '') for i in range(min(max_c + 1, 30))]
+                    if any(line_cells):
+                        rows_out.append(' | '.join(line_cells).strip())
+            if rows_out:
+                out_blocks.append(f'[엑셀 시트: {sname}]\n' + '\n'.join(rows_out))
+        if not out_blocks:
+            raise H.HwpError('엑셀 파일에서 읽을 수 있는 데이터가 없습니다.')
+        return '\n\n'.join(out_blocks)
+
+
+def extract_docx(path):
+    """워드(.docx) 문서에서 문단과 표를 순서대로 추출."""
+    try:
+        zf = zipfile.ZipFile(path, 'r')
+    except Exception:
+        raise H.HwpError('워드(.docx) 파일을 열 수 없습니다. 암호가 걸려 있거나 손상된 파일인지 확인해 주세요.')
+    with zf:
+        if 'word/document.xml' not in zf.namelist():
+            raise H.HwpError('올바른 워드(.docx) 문서 구조가 아닙니다.')
+        root = etree.fromstring(zf.read('word/document.xml'))
+        body = root.find('.//{*}body')
+        if body is None:
+            body = root
+        out = []
+        for ch in body:
+            tag = ch.tag.split('}')[-1]
+            if tag == 'p':
+                txt = ''.join(t.text or '' for t in ch.findall('.//{*}t')).strip()
+                if txt:
+                    out.append(txt)
+            elif tag == 'tbl':
+                t_rows = ['[표]']
+                for tr in ch.findall('.//{*}tr'):
+                    row_vals = []
+                    for tc in tr.findall('./{*}tc'):
+                        cell_p = [''.join(t.text or '' for t in p.findall('.//{*}t')).strip()
+                                  for p in tc.findall('.//{*}p')]
+                        row_vals.append(' / '.join(x for x in cell_p if x))
+                    if any(row_vals):
+                        t_rows.append(' | '.join(row_vals))
+                t_rows.append('[/표]')
+                if len(t_rows) > 2:
+                    out.append('\n'.join(t_rows))
+        if not out:
+            raise H.HwpError('워드 문서에서 추출할 본문 텍스트가 없습니다.')
+        return '\n'.join(out)
+
+
+def _decode_pdf_hex(hex_str, cmap):
+    h = re.sub(r'\s+', '', hex_str)
+    if not h or len(h) % 2 != 0:
+        return ''
+    if h.upper().startswith('FEFF'):
+        try:
+            return bytes.fromhex(h[4:]).decode('utf-16-be', errors='ignore')
+        except Exception:
+            pass
+    if cmap and len(h) % 4 == 0:
+        chars = []
+        mapped = 0
+        for i in range(0, len(h), 4):
+            code = int(h[i:i + 4], 16)
+            if code in cmap:
+                chars.append(cmap[code])
+                mapped += 1
+            elif 0x20 <= code <= 0x7E or 0xAC00 <= code <= 0xD7A3:
+                chars.append(chr(code))
+        if mapped > 0 or chars:
+            return ''.join(chars)
+    if len(h) % 4 == 0:
+        try:
+            u16 = bytes.fromhex(h).decode('utf-16-be', errors='ignore')
+            if sum(1 for c in u16 if '\uac00' <= c <= '\ud7a3' or ' ' <= c <= '~') >= len(u16) * 0.6:
+                return u16
+        except Exception:
+            pass
+    try:
+        b = bytes.fromhex(h)
+        return b.decode('utf-8', errors='ignore') or b.decode('cp949', errors='ignore')
+    except Exception:
+        return ''
+
+
+def _decode_pdf_lit(lit):
+    # octal and escape sequences
+    def _oct(m):
+        return chr(int(m.group(1), 8))
+    s = re.sub(r'\\([0-7]{1,3})', _oct, lit)
+    s = s.replace(r'\n', '\n').replace(r'\r', '\r').replace(r'\t', '\t')
+    s = s.replace(r'\(', '(').replace(r'\)', ')').replace(r'\\', '\\')
+    raw = s.encode('latin1', errors='ignore')
+    if raw.startswith(b'\xfe\xff'):
+        return raw[2:].decode('utf-16-be', errors='ignore')
+    for enc in ('utf-8', 'cp949'):
+        try:
+            return raw.decode(enc)
+        except Exception:
+            pass
+    return raw.decode('latin1', errors='ignore')
+
+
+def extract_pdf(path):
+    """PDF 파일에서 FlateDecode 스트림 및 ToUnicode CMap을 해석하여 텍스트를 추출."""
+    with open(path, 'rb') as f:
+        data = f.read()
+    if not data.startswith(b'%PDF'):
+        raise H.HwpError('올바른 PDF 파일이 아닙니다.')
+
+    streams = []
+    for m in re.finditer(rb'stream\r?\n(.*?)\r?\nendstream', data, re.DOTALL):
+        raw = m.group(1)
+        dec = None
+        for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+            try:
+                dec = zlib.decompress(raw, wbits)
+                break
+            except Exception:
+                pass
+        if dec is None:
+            dec = raw
+        streams.append(dec)
+
+    # 1단계: ToUnicode CMap 수집
+    cmap = {}
+    for st in streams:
+        if b'beginbfchar' not in st and b'beginbfrange' not in st:
+            continue
+        txt = st.decode('latin1', errors='ignore')
+        for blk in re.findall(r'beginbfchar(.*?)endbfchar', txt, re.DOTALL):
+            for src, dst in re.findall(r'<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>', blk):
+                try:
+                    cmap[int(src, 16)] = bytes.fromhex(dst).decode('utf-16-be', errors='ignore')
+                except Exception:
+                    pass
+        for blk in re.findall(r'beginbfrange(.*?)endbfrange', txt, re.DOTALL):
+            for s1, s2, dst in re.findall(r'<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>\s*<([0-9A-Fa-f]+)>', blk):
+                try:
+                    c1, c2, base = int(s1, 16), int(s2, 16), int(dst, 16)
+                    if c2 - c1 <= 2048:
+                        for offset in range(c2 - c1 + 1):
+                            cmap[c1 + offset] = chr(base + offset)
+                except Exception:
+                    pass
+
+    # 2단계: BT ... ET 텍스트 블록에서 문자열 추출
+    lines = []
+    for st in streams:
+        if b'BT' not in st or b'beginbfchar' in st:
+            continue
+        txt = st.decode('latin1', errors='ignore')
+        for bt in re.findall(r'\bBT\b(.*?)\bET\b', txt, re.DOTALL):
+            seg_parts = []
+            for tok in re.finditer(r'<([0-9A-Fa-f\s]+)>|\((?:\\.|[^\\()])*\)|(\bT[dDmM\*]\b|\bT[jJ]\b)', bt):
+                hx, op = tok.group(1), tok.group(2)
+                full = tok.group(0)
+                if hx is not None:
+                    seg_parts.append(_decode_pdf_hex(hx, cmap))
+                elif full.startswith('(') and full.endswith(')'):
+                    seg_parts.append(_decode_pdf_lit(full[1:-1]))
+                elif op in ('Td', 'TD', 'T*', 'Tm'):
+                    if seg_parts:
+                        joined = ''.join(seg_parts).strip()
+                        if joined:
+                            lines.append(joined)
+                        seg_parts = []
+            if seg_parts:
+                joined = ''.join(seg_parts).strip()
+                if joined:
+                    lines.append(joined)
+
+    cleaned = []
+    for ln in lines:
+        s = ' '.join(re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', ln).split())
+        if s and (not cleaned or cleaned[-1] != s):
+            cleaned.append(s)
+
+    result = '\n'.join(cleaned).strip()
+    if len(result) < 5:
+        raise H.HwpError('PDF에서 텍스트를 추출하지 못했습니다(스캔 이미지 PDF 등). 한글(.hwpx/.hwp)이나 엑셀(.xlsx)·워드(.docx)·텍스트 파일로 올려 주세요.')
+    return result
+
+
+def extract_file(path, out_path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext == '.xlsx':
+        txt = extract_xlsx(path)
+    elif ext == '.docx':
+        txt = extract_docx(path)
+    elif ext == '.pdf':
+        txt = extract_pdf(path)
+    else:
+        raise H.HwpError(f'지원하지 않는 문서 형식입니다: {ext}')
+    with open(out_path, 'w', encoding='utf-8') as f:
+        f.write(txt)
+    print(f'[자료 추출 완료] {ext} — {len(txt)}자')
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description='한글 척척 엔진 도우미')
     sp = ap.add_subparsers(dest='cmd')
@@ -524,6 +804,9 @@ def main(argv=None):
     f.add_argument('hwpx')
     f.add_argument('keys')
     f.add_argument('-o', '--out', required=True)
+    ex = sp.add_parser('extract', help='참고자료(.xlsx, .docx, .pdf) 텍스트·표 추출')
+    ex.add_argument('src')
+    ex.add_argument('-o', '--out', required=True)
     args = ap.parse_args(argv)
     try:
         if args.cmd == 'photos':
@@ -538,6 +821,8 @@ def main(argv=None):
         elif args.cmd == 'fit':
             with open(args.keys, encoding='utf-8-sig') as f:
                 fit(args.hwpx, json.load(f), args.out)
+        elif args.cmd == 'extract':
+            extract_file(args.src, args.out)
         else:
             ap.print_help()
             return 1

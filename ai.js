@@ -88,6 +88,9 @@ function buildContext(c, refsText) {
   if (c.isDefault) {
     L.push('', '(사용자가 별도 양식 파일 대신 공공기관 표준 기본 양식을 선택했다. 문서 성격에 맞게 장·절과 표 구성을 [문서 종류별 표준 구성]에 맞춰 체계적으로 구성한다.)');
   }
+  if (c.profileLines && c.profileLines.length) {
+    L.push('', '[기안 부서·담당자 기본 정보 (양식의 표지·머리글 \'@바꾸기\' 및 담당부서·작성자 칸에 자동 반영)]', ...c.profileLines);
+  }
   L.push('', '[사용자 작성 요청]', c.request.trim() || '(적지 않음)');
   for (const m of c.mats) {
     L.push('', '[참고·근거 자료: ' + m.name + ']', m.text.trim());

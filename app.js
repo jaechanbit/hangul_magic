@@ -204,23 +204,30 @@ async function loadSample(file) {
   return sampleCache[file];
 }
 
+const PRESET_FORMS = {
+  plan: { dtype: 'plan', name: '공공기관_표준_사업추진계획서.hwpx', file: 'plan.hwpx.b64.txt' },
+  report: { dtype: 'report', name: '공공기관_표준_결과보고서.hwpx', file: 'standard_report.hwpx.b64.txt' },
+  review: { dtype: 'review', name: '공공기관_표준_현안검토보고서.hwpx', file: 'review.hwpx.b64.txt' },
+  budget: { dtype: 'budget', name: '공공기관_표준_예산요구산출내역서.hwpx', file: 'budget.hwpx.b64.txt' },
+  minutes: { dtype: 'minutes', name: '공공기관_표준_회의록간담회보고.hwpx', file: 'minutes.hwpx.b64.txt' },
+};
+
+async function loadPresetForm(key) {
+  const p = PRESET_FORMS[key] || PRESET_FORMS.plan;
+  st.docType = p.dtype;
+  syncDocTypeChips();
+  await useForm(p.name, await loadSample(p.file), true, key);
+}
+
 $('#f-input').addEventListener('change', async () => {
   const f = $('#f-input').files[0];
   $('#f-input').value = '';
-  if (f) await useForm(f.name, new Uint8Array(await f.arrayBuffer()), false);
+  if (f) await useForm(f.name, new Uint8Array(await f.arrayBuffer()), false, '');
 });
 
-$('#f-preset-plan').addEventListener('click', async () => {
-  st.docType = 'plan';
-  syncDocTypeChips();
-  await useForm('공공기관_표준_사업추진계획서.hwpx', await loadSample('plan.hwpx.b64.txt'), true);
-});
-
-$('#f-preset-report').addEventListener('click', async () => {
-  st.docType = 'report';
-  syncDocTypeChips();
-  await useForm('공공기관_표준_결과보고서.hwpx', await loadSample('standard_report.hwpx.b64.txt'), true);
-});
+for (const btn of document.querySelectorAll('[data-preset]')) {
+  btn.addEventListener('click', () => loadPresetForm(btn.dataset.preset));
+}
 
 // 드래그 앤 드롭 지원
 addEventListener('dragover', e => {
@@ -240,10 +247,10 @@ addEventListener('drop', async e => {
   const fs = [...e.dataTransfer.files];
   if (st.step === 1) {
     const f = fs[0];
-    await useForm(f.name, new Uint8Array(await f.arrayBuffer()), false);
+    await useForm(f.name, new Uint8Array(await f.arrayBuffer()), false, '');
   } else if (st.step === 2) {
     const imgs = fs.filter(isImage);
-    const mats = fs.filter(f => !isImage(f) && /\.(hwpx|hwp|txt|md|csv)$/i.test(f.name));
+    const mats = fs.filter(f => !isImage(f) && /\.(hwpx|hwp|xlsx|docx|pdf|txt|md|csv)$/i.test(f.name));
     if (mats.length) await handleMats(mats);
     if (imgs.length) await handlePhotos(imgs);
   }
@@ -297,7 +304,7 @@ async function analyze(maskedBytes, wantSlots) {
   return { analysis, outline0: DEC.decode(r.files['o.txt']), fill, slots, cover, room };
 }
 
-async function useForm(name, bytes, isDefault) {
+async function useForm(name, bytes, isDefault, presetKey = '') {
   if (st.busy) return;
   st.busy = true;
   say('#f-msg', []);
@@ -323,6 +330,7 @@ async function useForm(name, bytes, isDefault) {
       doc,
       fromHwp,
       isDefault,
+      presetKey: isDefault ? (presetKey || st.docType || 'plan') : '',
       photoSlots: slots.length,
       slotHints: slots.map(x => (x.hint || '').replace(/\s+/g, ' ').trim().slice(0, 30)),
       slotRatios: slots.map(x => (x.w > 0 && x.h > 0 ? Math.min(2, Math.max(0.5, x.w / x.h)) : 4 / 3)),
@@ -338,6 +346,7 @@ async function useForm(name, bytes, isDefault) {
     st.form.pages = pages;
     renderFacts();
     $('#to2-row').hidden = false;
+    saveDraft();
   } catch (e) {
     st.form = null;
     say('#f-msg', errText(e, name));
@@ -419,11 +428,148 @@ for (const b of document.querySelectorAll('[data-ex]')) {
 let reqTimer = null;
 function redetectSoon() {
   clearTimeout(reqTimer);
-  reqTimer = setTimeout(() => { redetect(); renderSend(); }, 350);
+  reqTimer = setTimeout(() => { redetect(); renderSend(); saveDraft(); }, 350);
 }
 $('#req').addEventListener('input', redetectSoon);
 
-// 참고 자료 처리
+// 내 기관·부서·기안자 기본 프로필 (localStorage 고정 저장)
+const PF_KEY = 'gov_hwp_profile';
+function getProfile() {
+  return {
+    org: ($('#pf-org') ? $('#pf-org').value.trim() : ''),
+    dept: ($('#pf-dept') ? $('#pf-dept').value.trim() : ''),
+    author: ($('#pf-author') ? $('#pf-author').value.trim() : ''),
+    tel: ($('#pf-tel') ? $('#pf-tel').value.trim() : ''),
+  };
+}
+function syncProfileBadge() {
+  const p = getProfile();
+  const parts = [p.org, p.dept, p.author, p.tel].filter(Boolean);
+  if ($('#pf-badge')) {
+    $('#pf-badge').textContent = parts.length ? `${parts.slice(0, 3).join(' · ')} (자동 적용 중)` : '미설정';
+  }
+}
+function loadProfile() {
+  try {
+    const raw = localStorage.getItem(PF_KEY);
+    if (!raw) return;
+    const p = JSON.parse(raw);
+    if ($('#pf-org') && p.org) $('#pf-org').value = p.org;
+    if ($('#pf-dept') && p.dept) $('#pf-dept').value = p.dept;
+    if ($('#pf-author') && p.author) $('#pf-author').value = p.author;
+    if ($('#pf-tel') && p.tel) $('#pf-tel').value = p.tel;
+    syncProfileBadge();
+  } catch (e) { /* ignore */ }
+}
+function saveProfile() {
+  try {
+    localStorage.setItem(PF_KEY, JSON.stringify(getProfile()));
+  } catch (e) { /* ignore */ }
+  syncProfileBadge();
+  redetectSoon();
+}
+['#pf-org', '#pf-dept', '#pf-author', '#pf-tel'].forEach(sel => {
+  if ($(sel)) $(sel).addEventListener('input', saveProfile);
+});
+if ($('#pf-clear')) {
+  $('#pf-clear').addEventListener('click', () => {
+    ['#pf-org', '#pf-dept', '#pf-author', '#pf-tel'].forEach(sel => { if ($(sel)) $(sel).value = ''; });
+    saveProfile();
+  });
+}
+function profileLinesForPrompt(maskFn) {
+  const p = getProfile();
+  const lines = [];
+  if (p.org) lines.push('- 기관명: ' + maskFn(p.org));
+  if (p.dept) lines.push('- 부서·팀명: ' + maskFn(p.dept));
+  if (p.author) lines.push('- 담당자(기안자): ' + maskFn(p.author));
+  if (p.tel) lines.push('- 연락처: ' + maskFn(p.tel));
+  return lines;
+}
+
+// 작업 자동 임시저장 및 새로고침 복구 (localStorage)
+const DRAFT_KEY = 'gov_hwp_draft';
+function saveDraft() {
+  try {
+    const req = ($('#req') ? $('#req').value.trim() : '');
+    const hasRes = !!(st.result && st.result.body);
+    if (!req && !hasRes) return;
+    const payload = {
+      ts: Date.now(),
+      presetKey: (st.form && st.form.presetKey) || (PRESET_FORMS[st.docType] ? st.docType : 'plan'),
+      docType: st.docType,
+      genMode: st.genMode,
+      req,
+      manual: st.manual.slice(0, 30),
+      hasResult: hasRes,
+      fill: !!(st.frozen && st.frozen.fill),
+      resultBody: hasRes ? st.result.body : null,
+      resultMap: hasRes && st.frozen ? st.frozen.map : null,
+    };
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(payload));
+  } catch (e) { /* ignore quota */ }
+}
+function clearDraft() {
+  try { localStorage.removeItem(DRAFT_KEY); } catch (e) { /* ignore */ }
+  if ($('#draft-banner')) $('#draft-banner').hidden = true;
+}
+function checkDraftBanner() {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    if (!raw) return;
+    const d = JSON.parse(raw);
+    if (d && (d.req || d.resultBody) && $('#draft-banner')) {
+      $('#draft-banner').hidden = false;
+    }
+  } catch (e) { /* ignore */ }
+}
+if ($('#draft-clear')) {
+  $('#draft-clear').addEventListener('click', clearDraft);
+}
+if ($('#draft-restore')) {
+  $('#draft-restore').addEventListener('click', async () => {
+    if (st.busy) return;
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY);
+      if (!raw) return;
+      const d = JSON.parse(raw);
+      $('#draft-banner').hidden = true;
+      st.docType = d.docType || 'plan';
+      syncDocTypeChips();
+      st.genMode = d.genMode || 'direct';
+      document.querySelectorAll('input[name="genmode"]').forEach(r => { r.checked = r.value === st.genMode; });
+      if ($('#req')) $('#req').value = d.req || '';
+      if (Array.isArray(d.manual)) st.manual = d.manual;
+      await loadPresetForm(d.presetKey || 'plan');
+      go(2);
+      renderPhotos();
+      redetect();
+      renderSend();
+      if (d.hasResult && d.resultBody && !d.fill) {
+        st.busy = true;
+        busyOn('임시저장된 완성 문서를 복구하는 중...');
+        try {
+          await freeze();
+          if (d.resultMap && st.frozen) {
+            Object.assign(st.frozen.map, d.resultMap);
+          }
+          st.busy = false;
+          await buildAndShow(d.resultBody, false);
+          say('#get-msg', '✅ 이전에 작업 중이던 기획·보고서 초안이 복구되었습니다.', true);
+        } finally {
+          st.busy = false;
+          busyOff();
+        }
+      } else {
+        say('#s2-msg', '✅ 이전에 입력하셨던 작성 요청과 설정이 복구되었습니다.', true);
+      }
+    } catch (e) {
+      say('#f-msg', '임시저장 데이터를 복구하지 못했습니다.');
+    }
+  });
+}
+
+// 참고 자료 처리 (.hwpx, .hwp, .xlsx, .docx, .pdf, .txt, .md, .csv)
 const MAT_MAX = 30000, MAT_TOTAL = 60000;
 function decodeText(u8) {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(u8).replace(/^\uFEFF/, ''); } catch (e) { /* fallback */ }
@@ -438,17 +584,33 @@ $('#m-input').addEventListener('change', async () => {
 
 async function handleMats(fs) {
   const errs = [];
-  busyOn('참고 자료에서 텍스트를 추출하는 중...');
+  busyOn('참고 자료에서 텍스트와 표 수치를 추출하는 중...');
   try {
     for (const f of fs) {
       if (st.mats.some(m => m.name === f.name)) continue;
       const u8 = new Uint8Array(await f.arrayBuffer());
       let text = '';
       if (/\.(hwpx|hwp)$/i.test(f.name)) {
-        const ext = /\.hwp$/i.test(f.name) ? '.hwp' : '.hwpx';
-        const r = await eng(['text', '/w/m' + ext], { ['m' + ext]: u8 }, []);
+        let hBytes = u8;
+        if (/\.hwp$/i.test(f.name) && isCfb(u8)) {
+          try {
+            const rh = await rhwp();
+            const d = new rh.HwpDocument(u8);
+            try { hBytes = d.exportHwpx(); } finally { freeDoc(d); }
+          } catch (e) { /* fallback to engine */ }
+        }
+        const r = await eng(['text', '/w/m.hwpx'], { 'm.hwpx': hBytes }, []);
         if (r.code !== 0) { errs.push(`「${f.name}」 텍스트 추출 실패: ${cleanLog(r.log)}`); continue; }
         text = r.log;
+      } else if (/\.(xlsx|docx|pdf)$/i.test(f.name)) {
+        const ext = f.name.match(/\.(xlsx|docx|pdf)$/i)[0].toLowerCase();
+        busyText(`「${f.name}」(${ext.toUpperCase()}) 문서에서 표와 본문을 추출하는 중...`);
+        const r = await eng(['extract', '/w/src' + ext, '-o', '/w/out.txt'], { ['src' + ext]: u8 }, ['out.txt'], 'extra');
+        if (r.code !== 0 || !r.files['out.txt']) {
+          errs.push(`「${f.name}」 추출 안내: ${cleanLog(r.log) || '문서에서 텍스트를 읽지 못했습니다.'}`);
+          continue;
+        }
+        text = DEC.decode(r.files['out.txt']);
       } else {
         text = decodeText(u8);
       }
@@ -579,7 +741,14 @@ function renderPhotos() {
 
 // 개인정보 마스킹
 function allTexts() {
-  return [$('#req').value, ...st.mats.map(m => m.text), ...st.mats.map(m => m.name), ...st.photos.map(p => p.caption)].filter(t => t && t.trim());
+  const pf = getProfile();
+  return [
+    $('#req').value,
+    pf.org, pf.dept, pf.author, pf.tel,
+    ...st.mats.map(m => m.text),
+    ...st.mats.map(m => m.name),
+    ...st.photos.map(p => p.caption),
+  ].filter(t => t && t.trim());
 }
 function redetect() {
   const files = st.form ? [st.form.doc] : [];
@@ -626,7 +795,9 @@ function renderSend() {
   if (!st.form) return;
   const { on } = HG.assignTokens(st.cands);
   const mask = t => HG.maskText(t || '', on);
+  const pfLines = profileLinesForPrompt(mask);
   const L = ['[사용자 작성 요청]', mask($('#req').value).trim() || '(아직 입력하지 않음)'];
+  if (pfLines.length) L.push('', '[기안 부서·담당자 기본 정보 (자동 적용)]', ...pfLines);
   for (const m of st.mats) L.push('', `[참고 자료: ${mask(m.name)}]`, mask(m.text).slice(0, 500) + (m.text.length > 500 ? ' …' : ''));
   if (st.photos.length) L.push('', `[첨부 사진] 총 ${st.photos.length}장 (이미지 파일은 로컬 보관, 설명만 전달)`, ...st.photos.map((p, i) => `${i + 1}. ${mask(p.caption) || '(설명 없음)'}`));
   L.push('', '[양식 내 텍스트 마스킹 미리보기]', ...HG.previewMasked(st.form.doc, on, 10));
@@ -653,6 +824,7 @@ async function freeze() {
     room: an.room || {},
     fill,
     docType: st.docType,
+    profileLines: profileLinesForPrompt(mask),
     request: mask($('#req').value),
     mats: st.mats.map(m => ({ name: mask(m.name), text: mask(m.text) })),
     photoCaps: st.photos.map(p => mask(p.caption.trim())),
@@ -690,6 +862,7 @@ function aiCtx() {
     room: f.room || {},
     fill: f.fill,
     isDefault: st.form.isDefault,
+    profileLines: f.profileLines || [],
     request: f.request,
     mats: f.mats,
     photos: f.photoCaps,
@@ -755,6 +928,36 @@ $('#paste-copy').addEventListener('click', async () => {
     say('#paste-msg', '프롬프트 원문을 펼쳐 두었습니다. 전체 선택 후 Ctrl+C로 복사해 주세요.', true);
   }
 });
+
+// 망분리(업무망 ↔ 인터넷망) 반출용 프롬프트 텍스트 파일 다운로드
+if ($('#paste-dl')) {
+  $('#paste-dl').addEventListener('click', () => {
+    if (!st.currentPrompt) return;
+    const blob = new Blob([st.currentPrompt], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = el('a', { href: url, download: 'AI_프롬프트_반출용(개인정보마스킹완료).txt' });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    doneFor($('#paste-dl'), '파일 저장 완료 ✓');
+    say('#paste-msg', '✅ 마스킹된 프롬프트가 텍스트(.txt) 파일로 저장되었습니다. 인터넷망 PC의 AI에 전달한 뒤 답변을 받아 오세요.', true);
+    setPasteStep(2);
+  });
+}
+
+// 망분리 환경: AI 답변 텍스트 파일(.txt) 불러오기
+if ($('#paste-file')) {
+  $('#paste-file').addEventListener('change', async () => {
+    const f = $('#paste-file').files[0];
+    $('#paste-file').value = '';
+    if (!f) return;
+    const txt = decodeText(new Uint8Array(await f.arrayBuffer()));
+    $('#paste-in').value = txt;
+    setPasteStep(3);
+    say('#paste-msg', `✅ 「${f.name}」에서 AI 답변(${txt.length.toLocaleString()}자)을 불러왔습니다. 아래 [AI 답변으로 한글 문서 조립하기]를 눌러 주세요.`, true);
+  });
+}
 
 // 다른 탭(ChatGPT/Claude/Gemini)에 갔다가 돌아오면 3번 입력창으로 자동 포커스
 document.addEventListener('visibilitychange', () => {
@@ -917,6 +1120,7 @@ async function buildAndShow(body, keep = false) {
     if (keep) keepPrev();
     st.result = { body: r.body, built: r.bytes, log: r.log };
     await finalize();
+    saveDraft();
     go(4);
   } catch (e) {
     say(st.step === 3 ? '#s3-msg' : '#get-msg', String((e && e.message) || e));
@@ -1038,13 +1242,85 @@ function docTitle() {
   return t || '공공_기획보고서';
 }
 
-function holes() {
+// 서식 칸(T2.3.1, P3 등)마다 사람이 알아보기 쉬운 한글 항목명 라벨을 추출
+function tidySlotLabel(t) {
+  const o = [];
+  let run = false;
+  for (const x of String(t || '').replace(/\s*\/\s*/g, ' ').trim().split(/\s+/)) {
+    const one = /^[가-힣]$/.test(x);
+    if (one && run) o[o.length - 1] += x; else o.push(x);
+    run = one;
+  }
+  const s = o.join(' ').trim();
+  return s.length > 22 ? s.slice(0, 21) + '…' : s;
+}
+
+function parseSlotRows(slotsText) {
+  const rows = new Map();
+  for (const line of String(slotsText || '').split('\n')) {
+    const m = line.match(/^(T(\d+)\.(\d+)\.(\d+)|P\d+)\s+(.*)$/);
+    if (!m) continue;
+    const blank = /^\(빈칸\)/.test(m[5]);
+    const rk = m[2] ? 'T' + m[2] + '.' + m[3] : m[1];
+    if (!rows.has(rk)) rows.set(rk, []);
+    rows.get(rk).push({
+      key: m[1],
+      col: m[4] ? +m[4] : 0,
+      blank,
+      hint: blank ? ((m[5].match(/←\s*(.+)$/) || [])[1] || '') : '',
+      text: blank ? '' : m[5],
+    });
+  }
+  return rows;
+}
+
+function slotLabelMap(slotsText) {
+  const map = new Map();
+  const rows = parseSlotRows(slotsText);
+  for (const row of rows.values()) {
+    for (const c of row) {
+      const left = row.filter(x => !x.blank && x.col < c.col).pop();
+      const raw = /^\[제출 문구·서명란/.test(c.text)
+        ? '제출 문구·서명란'
+        : tidySlotLabel(c.blank ? (c.hint.split(' / ')[0] || '') : (left ? left.text : c.text));
+      if (raw) map.set(c.key, raw);
+    }
+  }
+  return map;
+}
+
+function holes(showAll = false) {
   const f = st.frozen, res = st.result, back = t => HG.restoreText(t, f.map).text;
   if (f.fill) {
-    const out = [];
+    const rows = parseSlotRows(f.slots);
+    const lmap = slotLabelMap(f.slots);
+    const val = k => (res.body && res.body[k] != null ? back(String(res.body[k])) : '');
+    const NA = /^(해당\s*(사항\s*)?없음|없음|[-–—])$/;
+    const out = [], seen = new Set();
+    for (const row of rows.values()) {
+      const blanks = row.filter(c => c.blank);
+      const filledBlank = blanks.some(c => val(c.key).trim());
+      const rowNA = row.some(c => NA.test(val(c.key).trim()));
+      const labelRow = blanks.length <= 2 && row.some(c => !c.blank);
+      for (const c of row) {
+        seen.add(c.key);
+        const v = val(c.key);
+        const lbl = lmap.get(c.key) || '';
+        const disp = lbl ? `${lbl} (${c.key})` : `칸 ${c.key}`;
+        if (/○○/.test(v)) {
+          out.push({ key: c.key, label: disp, value: v });
+        } else if (c.blank && !v.trim() && !rowNA && (labelRow || filledBlank || c.key[0] === 'P')) {
+          out.push({ key: c.key, label: disp, value: v });
+        } else if (showAll && (c.blank || res.body[c.key] != null)) {
+          out.push({ key: c.key, label: disp, value: v });
+        }
+      }
+    }
     for (const [k, v] of Object.entries(res.body || {})) {
-      const s = back(String(v));
-      if (/○○/.test(s)) out.push({ key: k, label: `칸 ${k}`, value: s });
+      if (!seen.has(k) && (showAll || /○○/.test(String(v)))) {
+        const lbl = lmap.get(k) || '';
+        out.push({ key: k, label: lbl ? `${lbl} (${k})` : `칸 ${k}`, value: back(String(v)) });
+      }
     }
     return out;
   }
@@ -1084,12 +1360,32 @@ function renderResult() {
     $('#pages').replaceChildren(el('p', { class: 'hint', text: '미리보기를 렌더링하지 못했습니다. 한글 파일을 다운로드하여 확인해 주세요.' }));
   }
 
-  // 탭 1: 빈칸(○○) 채우기
-  const hs = holes();
+  // 고정 크기 표 셀 페이지 넘침(res.over) 경고 배너
+  if ($('#over-box')) {
+    if (res.over && res.over.length) {
+      const desc = res.over.map(o => `${o.page}쪽(${o.what})`).join(', ');
+      $('#over-text').innerHTML = `⚠️ <b>고정 표 칸 넘침 감지:</b> ${desc} 칸의 글자 수가 많아 한글에서 페이지 하단이 잘릴 수 있습니다.`;
+      $('#over-box').hidden = false;
+      if (!$('#wish').value.trim()) {
+        $('#wish').value = res.over.map(o => `${o.page}쪽 고정 칸 분량에 맞게 줄여 줘 (넘친 칸: ${o.what})`).join('\n');
+      }
+    } else {
+      $('#over-box').hidden = true;
+    }
+  }
+
+  // 탭 1: 빈칸(○○) 및 서식 항목 채우기
+  if ($('#holes-mode-wrap')) {
+    $('#holes-mode-wrap').hidden = !f.fill;
+  }
+  const showAllSlots = !!(f.fill && $('#holes-all') && $('#holes-all').checked);
+  const hs = holes(showAllSlots);
   st.holes = hs;
   $('#fill-n').textContent = hs.length ? `(${hs.length}곳)` : '(없음)';
   if (hs.length) {
-    $('#holes-hint').textContent = 'AI가 임의로 지어내지 않고 ○○로 비워 둔 항목입니다. 실제 수치·일정을 적고 아래 버튼을 누르면 AI 없이 1초 만에 반영됩니다.';
+    $('#holes-hint').textContent = showAllSlots
+      ? '서식의 전체 입력 칸입니다. 항목명 옆의 값을 바로 수정하고 아래 버튼을 누르면 AI 없이 1초 만에 반영됩니다.'
+      : 'AI가 임의로 지어내지 않고 ○○로 비워 둔 항목(또는 미입력 칸)입니다. 실제 수치·일정을 적고 아래 버튼을 누르면 AI 없이 1초 만에 반영됩니다.';
     $('#fill-list').replaceChildren(...hs.map((h, k) => {
       const inp = el('input', { type: 'text', id: 'hole' + k, value: h.value });
       return el('label', { class: 'fill-row', for: 'hole' + k },
@@ -1099,19 +1395,30 @@ function renderResult() {
     }));
     $('#refill').hidden = false;
   } else {
-    $('#holes-hint').textContent = '비워 둔 빈칸(○○)이 없습니다. 문구 수정은 [② 원문 직접 편집] 탭을 이용해 보세요!';
+    $('#holes-hint').textContent = f.fill
+      ? '비워 둔 빈칸(○○)이 없습니다. 아래 체크박스를 켜면 서식의 모든 칸을 항목명별로 바로 편집할 수 있습니다.'
+      : '비워 둔 빈칸(○○)이 없습니다. 문구 수정은 [② 원문 직접 편집] 탭을 이용해 보세요!';
     $('#fill-list').replaceChildren();
     $('#refill').hidden = true;
   }
 
-  // 탭 2: 개요 / 칸 값 원문 직접 편집기 (실제 복원된 텍스트로 보여 주어 편리하게 편집)
+  // 탭 2: 개요 / 칸 값 원문 직접 편집기 (서식 모드는 칸 코드 옆에 한글 항목명을 병기하여 가독성 확보)
   if (f.fill) {
+    const lmap = slotLabelMap(f.slots);
     const restoredObj = {};
     for (const [k, v] of Object.entries(res.body || {})) {
-      restoredObj[k] = back(String(v));
+      const lbl = lmap.get(k);
+      const dispKey = lbl ? `${k} (${lbl})` : k;
+      restoredObj[dispKey] = back(String(v));
+    }
+    if ($('#raw-hint')) {
+      $('#raw-hint').textContent = '각 칸 코드 옆에 한글 항목명이 함께 표시됩니다. 값만 고친 뒤 아래 버튼을 누르면 즉시 한글 문서에 반영됩니다.';
     }
     $('#raw-editor').value = JSON.stringify(restoredObj, null, 2);
   } else {
+    if ($('#raw-hint')) {
+      $('#raw-hint').textContent = '문구, 수치, 표 행(|), 소제목을 직접 고친 뒤 아래 버튼을 누르면 AI 없이 즉시 한글 파일과 미리보기가 갱신됩니다.';
+    }
     $('#raw-editor').value = back(String(res.body || ''));
   }
 
@@ -1124,12 +1431,120 @@ function renderResult() {
   if (res.photoNote) notes.push(res.photoNote);
   if (res.missing && res.missing.length) notes.push(`${res.missing.join(', ')} 토큰은 원본을 찾지 못해 그대로 남았습니다.`);
   for (const l of ((res.fitLog || '') + '\n' + (res.log || '')).split('\n')) {
-    if (/^- (쪽 수|참고|확인|주의)/.test(l) && !/가리개|사진 자리/.test(l)) {
+    if (/^- (쪽 수|참고|확인|주의)/.test(l) && !/가리개|사진 자리/.test(l) && !(res.fitLog && /칸이 늘어날 수 있습니다/.test(l))) {
       notes.push(l.replace(/^- /, ''));
     }
   }
   notes.push('구형 .hwp 제출이 필요한 경우, .hwpx를 내려받아 한컴오피스 한글에서 [다른 이름으로 저장 → 한글 문서(*.hwp)]로 저장하시면 표 계산식까지 100% 보존됩니다.');
   $('#notes').replaceChildren(...notes.map(t => el('li', { text: t })));
+}
+
+if ($('#holes-all')) {
+  $('#holes-all').addEventListener('change', () => {
+    if (st.result) renderResult();
+  });
+}
+
+if ($('#over-fix')) {
+  $('#over-fix').addEventListener('click', () => {
+    const res = st.result;
+    if (!res || !res.over || !res.over.length) return;
+    $('#wish').value = res.over.map(o => `${o.page}쪽 고정 칸 분량에 맞게 줄여 줘 (넘친 칸: ${o.what})`).join('\n');
+    const aiTabBtn = document.querySelector('.edit-tabs button[data-tab="ai"]');
+    if (aiTabBtn) aiTabBtn.click();
+    $('#ask-fix').click();
+  });
+}
+
+// 행정업무 운영 규정(공문서 표기법) 원클릭 자동 교정기 (AI 없이 로컬에서 즉시 교정)
+function normalizeGovString(str) {
+  let s = String(str || '');
+  let dateCnt = 0, timeCnt = 0, numCnt = 0, mdCnt = 0;
+
+  // 1) 마크다운 굵게(**) 제거
+  s = s.replace(/\*\*([^*]+)\*\*/g, (_, inner) => { mdCnt++; return inner; });
+
+  // 2) 날짜 표기 교정: YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD -> YYYY. M. D.(요일)
+  const DAYS = '일월화수목금토';
+  s = s.replace(/\b(20\d{2})\s*[-/.]\s*(0?[1-9]|1[0-2])\s*[-/.]\s*(0?[1-9]|[12]\d|3[01])\.?(?:\s*\(([일월화수목금토])(?:요일)?\))?(?!\d)/g,
+    (full, y, m, d, w) => {
+      const yn = +y, mn = +m, dn = +d;
+      let dow = w || '';
+      if (!dow) {
+        const dt = new Date(yn, mn - 1, dn);
+        if (dt.getFullYear() === yn && dt.getMonth() === mn - 1 && dt.getDate() === dn) {
+          dow = DAYS[dt.getDay()];
+        }
+      }
+      const formatted = `${yn}. ${mn}. ${dn}.` + (dow ? `(${dow})` : '');
+      if (formatted !== full) dateCnt++;
+      return formatted;
+    });
+
+  // 3) 시각 표기 교정: '오후 2시 30분' -> '14:30', '오후 2시' -> '14:00', '14시 30분' -> '14:30'
+  s = s.replace(/(?:(오전|오후)\s*)?(\d{1,2})시(?:\s*(\d{1,2})분)?(?!\s*간)/g, (full, ampm, hh, mm) => {
+    let h = +hh;
+    const m = mm !== undefined ? +mm : 0;
+    if (h > 24 || m > 59) return full;
+    if (!ampm && mm === undefined) return full; // 단독 '2시' 등은 오탐 방지를 위해 유지하되 오전/오후가 있거나 분이 있으면 변환
+    if (ampm === '오후' && h < 12) h += 12;
+    if (ampm === '오전' && h === 12) h = 0;
+    const formatted = String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+    if (formatted !== full) timeCnt++;
+    return formatted;
+  });
+
+  // 4) 금액·인원·물량 등 4자리 이상 아라비아 숫자 천 단위 쉼표 자동 삽입 (연도 제외)
+  s = s.replace(/(?<![\d.,-])(\d{4,})(?=\s*(?:원|천\s*원|백만\s*원|억\s*원|명|건|개|대|부|회|식|호|카피|시간))/g, (full, digits) => {
+    const formatted = Number(digits).toLocaleString('en-US');
+    if (formatted !== full) numCnt++;
+    return formatted;
+  });
+
+  return { text: s, dateCnt, timeCnt, numCnt, mdCnt, total: dateCnt + timeCnt + numCnt + mdCnt };
+}
+
+if ($('#norm-btn')) {
+  $('#norm-btn').addEventListener('click', async () => {
+    if (st.busy || !st.result) return;
+    const f = st.frozen, res = st.result;
+    const back = t => HG.restoreText(t, f.map).text;
+    let total = 0, dateCnt = 0, timeCnt = 0, numCnt = 0, mdCnt = 0;
+    let newBody;
+
+    if (f.fill) {
+      const restored = {};
+      for (const [k, v] of Object.entries(res.body || {})) {
+        const r = normalizeGovString(back(String(v)));
+        restored[k] = r.text;
+        total += r.total; dateCnt += r.dateCnt; timeCnt += r.timeCnt; numCnt += r.numCnt; mdCnt += r.mdCnt;
+      }
+      const mask = maskMore(Object.values(restored));
+      newBody = {};
+      for (const [k, v] of Object.entries(restored)) newBody[k] = mask(v);
+    } else {
+      const r = normalizeGovString(back(String(res.body || '')));
+      total = r.total; dateCnt = r.dateCnt; timeCnt = r.timeCnt; numCnt = r.numCnt; mdCnt = r.mdCnt;
+      const mask = maskMore([r.text]);
+      newBody = mask(r.text);
+    }
+
+    if (total === 0) {
+      say('#get-msg', '✅ 점검 결과: 날짜·시각·금액 표기가 이미 행정업무 운영 규정에 맞게 작성되어 있습니다.', true);
+      doneFor($('#norm-btn'), '표기법 이상 없음 ✓');
+      return;
+    }
+
+    await buildAndShow(newBody, true);
+    const details = [
+      dateCnt ? `날짜 ${dateCnt}건` : '',
+      timeCnt ? `시각 ${timeCnt}건` : '',
+      numCnt ? `숫자 천단위 쉼표 ${numCnt}건` : '',
+      mdCnt ? `마크다운 기호 ${mdCnt}건` : '',
+    ].filter(Boolean).join(', ');
+    say('#get-msg', `✅ 행정업무 운영 규정 자동 교정 완료: 총 ${total}건(${details})을 공문서 표준 표기법으로 교정했습니다.`, true);
+    doneFor($('#norm-btn'), `교정 완료 (${total}건) ✓`);
+  });
 }
 
 // 4단계 편집 탭 전환
@@ -1182,7 +1597,8 @@ $('#raw-apply').addEventListener('click', async () => {
       const parsed = JSON.parse(rawText);
       body = {};
       for (const [k, v] of Object.entries(parsed)) {
-        body[k] = mask(String(v));
+        const cleanKey = String(k).trim().split(/\s+/)[0];
+        body[cleanKey] = mask(String(v));
       }
     } catch (e) {
       say('#get-msg', 'JSON 형식이 올바르지 않습니다. 따옴표와 쉼표를 확인해 주세요.');
@@ -1309,7 +1725,9 @@ if ($('#howto-open') && howtoDlg) {
   howtoDlg.addEventListener('close', () => { if (howtoVid) howtoVid.pause(); });
 }
 
-// 초기 프리로드
+// 초기 프리로드 및 프로필·임시저장 확인
+loadProfile();
+checkDraftBanner();
 refs().catch(() => {});
 rhwp().catch(() => {});
 go(1);
