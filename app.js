@@ -1175,6 +1175,13 @@ async function finalize() {
         if (tag === '넘침' && what) res.over.push({ page: +page, what });
       }
     }
+  } else if (!f.fill) {
+    busyText('표 행 높이 및 쪽 나눔(페이지 잘림 방지)을 보정하는 중...');
+    const r = await eng(['paginate', '/w/a.hwpx', '-o', '/w/b.hwpx'], { 'a.hwpx': bytes }, ['b.hwpx'], 'extra');
+    if (r.code === 0 && r.files['b.hwpx']) {
+      bytes = r.files['b.hwpx'];
+      res.fitLog = r.log;
+    }
   }
 
   let doc = await HG.openHwpx('r.hwpx', bytes);

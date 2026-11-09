@@ -505,11 +505,311 @@ def fit(path, keys, out_path):
                          '아래 「AI에게 고쳐 달라고 하기」로 칸에 맞게 줄여 주세요.' % (fx['page'], lines, what))
             over.append('넘침\t%d\t%s' % (fx['page'], what))
     hed.save()
+    hdr_el = pkg.xml('Contents/header.xml')
+    if fix_header_spacing(hdr_el):
+        pkg.put_xml('Contents/header.xml', hdr_el)
     H.finish_package(pkg, sec_name, sec, None)
     pkg.save(out_path)
     print('[칸 맞춤] %s — 채운 칸 %d곳, 늘린 줄 %d곳' % (out_path, len(keys), len(grow)))
     for x in notes + over:
         print(x)
+
+
+# ---------------------------------------------------------------- 조립 문서(build) 스마트 쪽 나눔 · 표 행 높이 확장 · 머리글 폭 보정
+
+def fix_header_spacing(hdr_root):
+    """자간(spacing)이 과도하게 좁거나(-6% 미만) 휴먼명조(12)에 인위적 굵게(bold)가 걸려 글자가 뭉개지는 정의를 보정."""
+    changed = False
+    for cp in hdr_root.findall('.//' + H.H('charPr')):
+        fr = cp.find(H.H('fontRef'))
+        is_myeongjo = fr is not None and fr.get('hangul') in ('10', '12')
+        sp = cp.find(H.H('spacing'))
+        if sp is not None:
+            for k in ('hangul', 'latin', 'hanja', 'japanese', 'other', 'symbol', 'user'):
+                try:
+                    v = int(sp.get(k, '0') or 0)
+                    if v < -6:
+                        sp.set(k, '0' if is_myeongjo else '-5')
+                        changed = True
+                except ValueError:
+                    pass
+        if is_myeongjo and cp.get('id') == '62':
+            b_el = cp.find(H.H('bold'))
+            if b_el is not None:
+                cp.remove(b_el)
+                changed = True
+    return changed
+
+
+def balance_table_col_widths(tbl):
+    """머리행(첫 줄)의 짧은 항목명(예: '구분(안건)')이 폭이 좁아 ')' 한 글자만 줄바꿈되는 현상을 방지."""
+    trs = tbl.findall(H.P('tr'))
+    if not trs:
+        return
+    head_tcs = trs[0].findall(H.P('tc'))
+    C = len(head_tcs)
+    if C < 2 or any(H.tc_span(tc) != (1, 1) for tc in head_tcs):
+        return
+    widths = [H.tc_size(tc)[0] for tc in head_tcs]
+    total_w = sum(widths)
+    if total_w <= 0:
+        return
+    min_w = []
+    for j, tc in enumerate(head_tcs):
+        txt = ' '.join(H.tc_text(tc).split())
+        dlen = H.disp_len(txt)
+        if 0 < dlen <= 7.0:
+            need_w = int(dlen * 1450 + 1300)
+            min_w.append(min(need_w, int(total_w * 0.28)))
+        else:
+            min_w.append(min(widths[j], max(8500, int(total_w * 0.22))))
+
+    deficit = sum(max(0, min_w[j] - widths[j]) for j in range(C))
+    if deficit <= 0:
+        return
+    slack_cols = [j for j in range(C) if widths[j] > min_w[j] + 1200]
+    total_slack = sum(widths[j] - min_w[j] for j in slack_cols)
+    if total_slack < deficit:
+        return
+    new_w = list(widths)
+    for j in range(C):
+        if min_w[j] > widths[j]:
+            new_w[j] = min_w[j]
+    rem = sum(new_w) - total_w
+    for j in slack_cols:
+        share = int(round(rem * (widths[j] - min_w[j]) / total_slack))
+        new_w[j] -= share
+    new_w[-1] += total_w - sum(new_w)
+
+    for tr in trs:
+        tcs = tr.findall(H.P('tc'))
+        if len(tcs) == C and all(H.tc_span(tc)[0] == 1 for tc in tcs):
+            for j, tc in enumerate(tcs):
+                sz = tc.find(H.P('cellSz'))
+                if sz is not None:
+                    sz.set('width', str(new_w[j]))
+
+
+def cell_need_safe(g, tc):
+    """칸 글이 차지하는 높이(미리보기 렌더러 및 한글 줄바꿈 오차를 고려한 안전 여유 포함)."""
+    w = H.tc_size(tc)[0]
+    m = cell_margin(tc)
+    avail = max(w - m[0] - m[1], 1000)
+    safe_avail = max(int(avail * 0.88), 800)
+    inner = tail = 0
+    for q in H._tc_paras(tc):
+        h, tail, _ = g.para(q, safe_avail)
+        inner += h
+    return inner - tail + m[2] + m[3] + 240
+
+
+def split_table_at_row(p_el, split_idx, ids, repeat_header=True):
+    """p_el 안의 표를 split_idx(본문 행 기준)에서 두 문단(p1, p2)으로 나누고 p2는 pageBreak='1'로 설정."""
+    tbl1 = p_el.find('.//' + H.P('tbl'))
+    if tbl1 is None:
+        return None
+    trs1 = tbl1.findall(H.P('tr'))
+    if split_idx <= 1 or split_idx >= len(trs1):
+        return None
+    for r_i, tr in enumerate(trs1):
+        for tc in tr.findall(H.P('tc')):
+            rs = H.tc_span(tc)[1]
+            if r_i < split_idx < r_i + rs:
+                return None
+
+    p2 = copy.deepcopy(p_el)
+    tbl2 = p2.find('.//' + H.P('tbl'))
+    trs2 = tbl2.findall(H.P('tr'))
+
+    for tr in trs1[split_idx:]:
+        tbl1.remove(tr)
+    keep2 = ([0] if repeat_header else []) + list(range(split_idx, len(trs2)))
+    for i, tr in enumerate(trs2):
+        if i not in keep2:
+            tbl2.remove(tr)
+
+    for tbl in (tbl1, tbl2):
+        rows = tbl.findall(H.P('tr'))
+        total_h = 0
+        for new_r, tr in enumerate(rows):
+            rh = 0
+            for tc in tr.findall(H.P('tc')):
+                ad = tc.find(H.P('cellAddr'))
+                if ad is not None:
+                    ad.set('rowAddr', str(new_r))
+                rh = max(rh, H.tc_size(tc)[1])
+            total_h += rh
+        tbl.set('rowCnt', str(len(rows)))
+        zl = tbl.find(H.P('cellzoneList'))
+        if zl is not None:
+            tbl.remove(zl)
+        sz = tbl.find(H.P('sz'))
+        if sz is not None:
+            sz.set('height', str(total_h))
+        H.strip_lineseg(p_el)
+
+    H.remove_ctrls(p2)
+    for r in H.para_runs(p2):
+        for tt in H.run_ts(r):
+            for c in list(tt):
+                tt.remove(c)
+            tt.text = ''
+    p2.set('pageBreak', '1')
+    p2.set('columnBreak', '0')
+    ids.renew(p2)
+    H.strip_lineseg(p2)
+    return p2
+
+
+def paginate_built_section(sec, hdr_root, frame_end=0):
+    """조립된 문서(build 모드)의 모든 표 열 폭과 행 높이를 실제 줄 수에 맞게 맞추고,
+    쪽 끝에서 표가 잘리거나 소제목이 홀로 남지 않도록 pageBreak 및 표 분할을 수행."""
+    g = H.PageGauge(hdr_root, [sec])
+    ids = H.IdState(sec)
+    W, Hh = page_box(sec)
+    grown_rows = 0
+    page_moves = 0
+
+    for p in sec.findall(H.P('p'))[frame_end:]:
+        for tbl in p.iter(H.P('tbl')):
+            trs = tbl.findall(H.P('tr'))
+            if len(trs) < 2:
+                continue
+            balance_table_col_widths(tbl)
+            for r_idx, tr in enumerate(trs):
+                max_delta = 0
+                for tc in tr.findall(H.P('tc')):
+                    if H.tc_span(tc)[1] > 1:
+                        continue
+                    hgt = H.tc_size(tc)[1]
+                    need = cell_need_safe(g, tc)
+                    if need > hgt:
+                        max_delta = max(max_delta, need - hgt)
+                if max_delta > 0:
+                    grow_row(tbl, r_idx, max_delta)
+                    grown_rows += 1
+            H.strip_lineseg(p)
+
+    SAFE_Hh = Hh - 1800
+    paras = list(sec.findall(H.P('p')))
+    y = 0.0
+    i = 0
+    while i < len(paras):
+        p = paras[i]
+        if p.get('pageBreak') == '1' and y > 0:
+            y = 0.0
+        h, tail, _ = g.para(p, W)
+        tbl = H.content_table(p)
+
+        if i >= frame_end and tbl is not None:
+            head_start = i
+            head_h = 0.0
+            j = i - 1
+            while j >= frame_end and H.content_table(paras[j]) is None:
+                pj = paras[j]
+                hj, _, _ = g.para(pj, W)
+                head_h += hj
+                head_start = j
+                if H.para_text(pj).strip() or H.has_inline_obj(pj):
+                    break
+                j -= 1
+
+            if y - tail + h > SAFE_Hh and y > 0:
+                trs = tbl.findall(H.P('tr'))
+                row_hs = [max([H.tc_size(tc)[1] for tc in tr.findall(H.P('tc'))] + [0]) for tr in trs]
+                min_stay_h = sum(row_hs[:min(len(row_hs), 3)]) + 600
+                if len(trs) <= 5 or (y + min_stay_h > SAFE_Hh):
+                    target_idx = head_start
+                    while target_idx < i and not H.para_text(paras[target_idx]).strip() and not H.has_inline_obj(paras[target_idx]):
+                        sec.remove(paras[target_idx])
+                        paras.pop(target_idx)
+                        i -= 1
+                    paras[target_idx].set('pageBreak', '1')
+                    page_moves += 1
+                    y = 0.0
+                    for k in range(target_idx, i + 1):
+                        hk, _, _ = g.para(paras[k], W)
+                        y += hk
+                    if y > SAFE_Hh and len(trs) > 2:
+                        avail_for_tbl = SAFE_Hh - (y - h)
+                        acc = 0
+                        split_at = -1
+                        for r_i, rh in enumerate(row_hs):
+                            if acc + rh > avail_for_tbl and r_i >= 2:
+                                split_at = r_i
+                                break
+                            acc += rh
+                        if split_at > 1:
+                            p2 = split_table_at_row(p, split_at, ids, repeat_header=True)
+                            if p2 is not None:
+                                idx_in_sec = list(sec).index(p)
+                                sec.insert(idx_in_sec + 1, p2)
+                                paras.insert(i + 1, p2)
+                                h1, _, _ = g.para(p, W)
+                                y = (y - h) + h1
+                                page_moves += 1
+                    i += 1
+                    continue
+                else:
+                    avail_for_tbl = SAFE_Hh - y
+                    acc = 0
+                    split_at = -1
+                    for r_i, rh in enumerate(row_hs):
+                        if acc + rh > avail_for_tbl and r_i >= 2:
+                            split_at = r_i
+                            break
+                        acc += rh
+                    if split_at > 1:
+                        p2 = split_table_at_row(p, split_at, ids, repeat_header=True)
+                        if p2 is not None:
+                            idx_in_sec = list(sec).index(p)
+                            sec.insert(idx_in_sec + 1, p2)
+                            paras.insert(i + 1, p2)
+                            h1, _, _ = g.para(p, W)
+                            y += h1
+                            page_moves += 1
+                            i += 1
+                            continue
+
+        if i >= frame_end and tbl is None and y + h - tail > SAFE_Hh and y > 0:
+            if i > frame_end and H.has_inline_obj(paras[i - 1]) and H.content_table(paras[i - 1]) is None:
+                prev_p = paras[i - 1]
+                if i - 2 >= frame_end and not H.para_text(paras[i - 2]).strip() and not H.has_inline_obj(paras[i - 2]):
+                    sec.remove(paras[i - 2])
+                    paras.pop(i - 2)
+                    i -= 1
+                prev_p.set('pageBreak', '1')
+                page_moves += 1
+                hp_prev, _, _ = g.para(prev_p, W)
+                y = hp_prev + h
+                i += 1
+                continue
+            else:
+                y = h
+                i += 1
+                continue
+
+        y += h
+        i += 1
+    return grown_rows, page_moves
+
+
+def paginate_doc(path, out_path):
+    try:
+        ref = H.RefDoc(path)
+        frame_end = ref.frame_end
+    except Exception:
+        frame_end = 0
+    pkg = H.Package(path)
+    hdr = pkg.xml('Contents/header.xml')
+    if fix_header_spacing(hdr):
+        pkg.put_xml('Contents/header.xml', hdr)
+    sec_name = pkg.section_names()[0]
+    sec = pkg.xml(sec_name)
+    grown, moves = paginate_built_section(sec, hdr, frame_end=frame_end)
+    H.finish_package(pkg, sec_name, sec, None)
+    pkg.save(out_path)
+    print('[쪽 나눔·표 맞춤] %s — 표 행 높이 보정 %d곳, 쪽 경계 정렬 %d곳' % (out_path, grown, moves))
 
 
 # ---------------------------------------------------------------- 참고·근거 자료(.xlsx / .docx / .pdf) 로컬 텍스트·표 추출
@@ -804,6 +1104,9 @@ def main(argv=None):
     f.add_argument('hwpx')
     f.add_argument('keys')
     f.add_argument('-o', '--out', required=True)
+    pg = sp.add_parser('paginate', help='조립된 문서의 표 행 높이와 쪽 나눔을 자동 보정')
+    pg.add_argument('hwpx')
+    pg.add_argument('-o', '--out', required=True)
     ex = sp.add_parser('extract', help='참고자료(.xlsx, .docx, .pdf) 텍스트·표 추출')
     ex.add_argument('src')
     ex.add_argument('-o', '--out', required=True)
@@ -821,6 +1124,8 @@ def main(argv=None):
         elif args.cmd == 'fit':
             with open(args.keys, encoding='utf-8-sig') as f:
                 fit(args.hwpx, json.load(f), args.out)
+        elif args.cmd == 'paginate':
+            paginate_doc(args.hwpx, args.out)
         elif args.cmd == 'extract':
             extract_file(args.src, args.out)
         else:
